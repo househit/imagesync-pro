@@ -1,8 +1,253 @@
-2024-06-17T09:15:12.789Z INFO [system] Activity module initialized.
-2024-06-17T09:15:13.804Z INFO [user:4782] User logged in. ip=213.82.XX.XXX
-2024-06-17T09:15:16.217Z WARN [middleware:auth] Unauthorized access attempt. path=/admin/userlist ip=213.82.XX.XXX
-2024-06-17T09:15:22.111Z INFO [activity] Activity recorded: {"action":"create","entity":"Product","id":"983233a"}
-2024-06-17T09:15:23.284Z INFO [user:4782] User updated account settings.
-2024-06-17T09:15:27.150Z INFO [system] Language switched to de-DE for user:4782
-2024-06-17T09:15:29.722Z ERROR [db] Database connection error: timeout after 3500ms [ALERT: Notified operations team]
-2024-06-17T09:15:32.324Z INFO [user:4782] User logged out.
+const fs = require('fs');
+const path = require('path');
+const config = require('./config/app.config.js');
+const i18n = require('./i18n');
+const express = require('express');
+
+const LOG_DIR = config.LOG_DIR || path.join(__dirname, '../logs');
+const LOG_FILE = path.join(LOG_DIR, 'activity.log');
+
+// --- Utility Functions ---
+
+function ensureLogDirExists() {
+  if (!fs.existsSync(LOG_DIR)) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+  }
+}
+
+// --- Sanitize and Validate Helpers ---
+
+function sanitizeString(str, fallback = '') {
+  if (typeof str !== 'string') return fallback;
+  // Remove problematic characters (basic example)
+  return str.replace(/[\r\n\t]/g, ' ').substr(0, 512);
+}
+
+function isPlainObject(obj) {
+  return obj && typeof obj === 'object' && !Array.isArray(obj);
+}
+
+function sanitizeDetails(details) {
+  if (isPlainObject(details)) {
+    // Limit keys and depth to avoid abuse
+    const sanitized = {};
+    Object.entries(details).slice(0, 20).forEach(([k, v]) => {
+      let key = sanitizeString(k, '');
+      if (typeof v === 'string') {
+        sanitized[key] = sanitizeString(v, '');
+      } else if (typeof v === 'number' || typeof v === 'boolean') {
+        sanitized[key] = v;
+      } else if (Array.isArray(v)) {
+        sanitized[key] = v.slice(0, 20).map(item => (typeof item === 'string' ? sanitizeString(item, '') : item));
+      } else if (isPlainObject(v)) {
+        // Avoid deep nesting
+        sanitized[key] = '[Object]';
+      } else {
+        sanitized[key] = String(v).substr(0, 256);
+      }
+    });
+    return sanitized;
+  }
+  if (typeof details === 'string') return sanitizeString(details, '');
+  return {};
+}
+
+function validateStatus(status) {
+  // Example: only allow certain values
+  const allowed = ['OK', 'ERROR', 'FAIL', 'SUCCESS', 'WARNING'];
+  if (typeof status === 'string' && allowed.includes(status.toUpperCase())) {
+    return status.toUpperCase();
+  }
+  return 'OK';
+}
+
+function validateAction(action) {
+  // Example: limit to uppercase strings, alphanum/underscore, max 48 chars
+  let a = sanitizeString(action, '').toUpperCase();
+  if (/^[A-Z0-9_]{1,48}$/.test(a)) return a;
+  return 'UNKNOWN';
+}
+
+function validateUser(user) {
+  // Only allow ascii user names up to 64 chars (customize as needed)
+  let u = sanitizeString(user, '');
+  if (/^[a-zA-Z0-9_\-@.]{1,64}$/.test(u)) return u;
+  return 'anon';
+}
+
+function formatLogEntry({ timestamp, user, action, details, status }) {
+  return JSON.stringify({
+    timestamp,
+    user,
+    action,
+    details,
+    status
+  });
+}
+
+// --- Efficient Tail Implementation ---
+function tailLinesSync(filePath, n) {
+  // Fast last-N-lines. For large files, read from end, buffer-by-buffer.
+  const CHUNK_SIZE = 32 * 1024;
+  let stats;
+  try {
+    stats = fs.statSync(filePath);
+  } catch {
+    return [];
+  }
+  if (stats.size === 0) return [];
+  const fd = fs.openSync(filePath, 'r');
+  let pos = stats.size;
+  let buffer = '';
+  let lines = [];
+  while (pos > 0 && lines.length <= n) {
+    const toRead = Math.min(CHUNK_SIZE, pos);
+    pos -= toRead;
+    const b = Buffer.alloc(toRead);
+    fs.readSync(fd, b, 0, toRead, pos);
+    buffer = b.toString('utf8') + buffer;
+    lines = buffer.split('\n');
+  }
+  fs.closeSync(fd);
+  // Remove empty trailing newline if present
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines.slice(-n);
+}
+
+function writeLogEntry(entry) {
+  ensureLogDirExists();
+  // Entry is already sanitized
+  fs.appendFileSync(LOG_FILE, formatLogEntry(entry) + '\n', { encoding: 'utf8' });
+}
+
+// Main log function with validation & sanitization.
+function logActivity({ user, action, details = {}, status = 'OK' }) {
+  const timestamp = new Date().toISOString();
+  const safeUser = validateUser(user);
+  const safeAction = validateAction(action);
+  const safeDetails = sanitizeDetails(details);
+  const safeStatus = validateStatus(status);
+  writeLogEntry({
+    timestamp,
+    user: safeUser,
+    action: safeAction,
+    details: safeDetails,
+    status: safeStatus
+  });
+}
+
+// Efficiently read only last N log entries. 
+function readLog({ limit = 100 }) {
+  ensureLogDirExists();
+  if (!fs.existsSync(LOG_FILE)) return [];
+  const lines = tailLinesSync(LOG_FILE, limit);
+  return lines.map(line => {
+    try {
+      const obj = JSON.parse(line);
+      // Defensive: simple validation for required fields
+      if (
+        typeof obj.timestamp === 'string' &&
+        typeof obj.user === 'string' &&
+        typeof obj.action === 'string' &&
+        'status' in obj
+      ) {
+        return obj;
+      }
+    } catch {}
+    return null;
+  }).filter(Boolean);
+}
+
+// --- Express API ---
+const router = express.Router();
+const { checkAuth } = require('./middleware/auth');
+
+router.get('/api/activity/log', checkAuth, (req, res) => {
+  const limit = Math.max(1, Math.min(1000, parseInt(req.query.limit) || 100));
+  const logs = readLog({ limit });
+  res.json({ logs });
+});
+
+module.exports = {
+  logActivity,
+  router
+};
+
+// --------------- REACT COMPONENT (src/components/ActivityLog.js) ---------------
+
+/* global i18n */
+import React, { useEffect, useState } from 'react';
+import PropTypes from 'prop-types';
+
+function formatTimestamp(ts, locale) {
+  const d = new Date(ts);
+  return d.toLocaleString(locale);
+}
+
+// Compose a unique table row key from timestamp, user, action (should be unique enough for log events)
+function rowKey(log) {
+  // If log.details might be unique per event, avoid including huge object in key
+  let t = log.timestamp || '';
+  let u = log.user || '';
+  let a = log.action || '';
+  return `${t}_${u}_${a}`;
+}
+
+export default function ActivityLog({ limit = 100, locale = 'en' }) {
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    fetch(`/api/activity/log?limit=${limit}`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(({ logs }) => { if (mounted) setLogs(logs); })
+      .catch(() => { if (mounted) setLogs([]); })
+      .finally(() => { if (mounted) setLoading(false); });
+    return () => { mounted = false; };
+  }, [limit]);
+
+  if (loading) return <div>Loading?</div>;
+  return (
+    <table className="activity-log-table">
+      <thead>
+        <tr>
+          <th>{i18n.t('Timestamp', locale)}</th>
+          <th>{i18n.t('User', locale)}</th>
+          <th>{i18n.t('Action', locale)}</th>
+          <th>{i18n.t('Details', locale)}</th>
+          <th>{i18n.t('Status', locale)}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {logs.map((log) => (
+          <tr key={rowKey(log)}>
+            <td>{formatTimestamp(log.timestamp, locale)}</td>
+            <td>{log.user}</td>
+            <td>{i18n.t(log.action, locale)}</td>
+            <td>{typeof log.details === 'object' ? JSON.stringify(log.details) : log.details}</td>
+            <td>{i18n.t(log.status, locale)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+ActivityLog.propTypes = {
+  limit: PropTypes.number,
+  locale: PropTypes.string
+};
+
+// --------------- I18N USAGE EXAMPLE (src/i18n/index.js) ---------------
+
+import en from './en.json';
+import fr from './fr.json';
+
+const langMap = { en, fr /* etc */ };
+
+export default {
+  t: (key, locale = 'en') =>
+    langMap[locale] && langMap[locale][key] ? langMap[locale][key] : key
+};
+
+// --- End of file ---
