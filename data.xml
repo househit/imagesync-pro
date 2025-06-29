@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<data xmlns="http://example.com/schema/data"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://example.com/schema/data data.xsd">
+  <exchange>
+    <description>Structured data exchange schema for modular Node.js + React i18n web application</description>
+    <version>1.0.0</version>
+    <lastUpdated>2024-06-26</lastUpdated>
+    <fields>
+      <field name="id" type="string" required="true"/>
+      <field name="type" type="string" required="true"/>
+      <field name="payload" type="payloadType" required="false"/>
+      <field name="timestamp" type="datetime" required="true"/>
+      <field name="locale" type="string" required="false"/>
+    </fields>
+    <payloadDocumentation>
+      <description>
+        The <payload> field allows extensible structured objects as event/context metadata.
+        For schema validation, payloadType is defined as a top-level XML element containing key-value pairs,
+        where keys are element names and values are strings or nested payloadType structures.
+        Examples include session info, config changes, etc. See XSD or docs for more.
+      </description>
+      <examplePayloads>
+        <payloadType>
+          <loginTime>2024-06-25T14:33:12Z</loginTime>
+          <ip>192.168.1.5</ip>
+        </payloadType>
+        <payloadType>
+          <parameter>theme</parameter>
+          <newValue>dark</newValue>
+        </payloadType>
+      </examplePayloads>
+    </payloadDocumentation>
+    <examples>
+      <example>
+        <id>user123-session</id>
+        <type>sessionStart</type>
+        <payload>
+          <loginTime>2024-06-25T14:33:12Z</loginTime>
+          <ip>192.168.1.5</ip>
+        </payload>
+        <timestamp>2024-06-25T14:33:12Z</timestamp>
+        <locale>en-US</locale>
+      </example>
+      <example>
+        <id>sysconf001</id>
+        <type>configUpdate</type>
+        <payload>
+          <parameter>theme</parameter>
+          <newValue>dark</newValue>
+        </payload>
+        <timestamp>2024-06-25T15:05:02Z</timestamp>
+      </example>
+    </examples>
+  </exchange>
+  <logging>
+    <level>info</level>
+    <output>logs/app.log</output>
+    <rotation>
+      <enabled>true</enabled>
+      <size>10MB</size>
+      <maxFiles>5</maxFiles>
+    </rotation>
+    <formats>
+      <format>timestamped-json</format>
+      <format>plaintext</format>
+    </formats>
+  </logging>
+  <i18n>
+    <supportedLocales>
+      <locale>en-US</locale>
+      <locale>es-ES</locale>
+      <locale>fr-FR</locale>
+    </supportedLocales>
+    <defaultLocale>en-US</defaultLocale>
+    <resourceFormat>pot</resourceFormat>
+    <fallbackEnabled>true</fallbackEnabled>
+  </i18n>
+  <modules>
+    <module>
+      <name>auth</name>
+      <enabled>true</enabled>
+      <description>User authentication and access control</description>
+    </module>
+    <module>
+      <name>settings</name>
+      <enabled>true</enabled>
+      <description>User and app-wide settings management</description>
+    </module>
+    <module>
+      <name>dataExchange</name>
+      <enabled>true</enabled>
+      <description>Handles all structured data import/export</description>
+    </module>
+    <module>
+      <name>i18n</name>
+      <enabled>true</enabled>
+      <description>Internationalization and language support</description>
+    </module>
+    <module>
+      <name>logging</name>
+      <enabled>true</enabled>
+      <description>Centralized logging and diagnostics</description>
+    </module>
+  </modules>
+  <config>
+    <port>3000</port>
+    <frontend>
+      <publicUrl>/</publicUrl>
+      <staticAssets>public</staticAssets>
+    </frontend>
+    <backend>
+      <database>
+        <type>sqlite</type>
+        <file>data/app.db</file>
+      </database>
+      <rateLimit>
+        <windowMs>60000</windowMs>
+        <max>100</max>
+      </rateLimit>
+      <session>
+        <!-- IMPORTANT: Replace 'CHANGE_ME_TO_A_SECURE_SECRET' with a securely generated key at deployment.
+             Never commit actual secrets to version control. -->
+        <secret>CHANGE_ME_TO_A_SECURE_SECRET</secret>
+        <cookieMaxAge>86400000</cookieMaxAge>
+      </session>
+    </backend>
+    <extensibility>
+      <apiEnabled>true</apiEnabled>
+      <pluginSystem>true</pluginSystem>
+    </extensibility>
+  </config>
+</data>
