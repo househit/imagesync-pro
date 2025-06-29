@@ -1,0 +1,96 @@
+const fs = require('fs');
+const path = require('path');
+const { stringify } = require('csv-stringify/sync');
+
+/**
+ * Utility function to sanitize a filename:
+ * - Removes directory traversal patterns.
+ * - Removes illegal characters.
+ * - Replaces whitespace with underscores.
+ * - Limits length for compatibility.
+ */
+function sanitizeFileName(fileName) {
+  if (typeof fileName !== 'string' || !fileName.trim()) {
+    // fallback will be generated outside
+    return '';
+  }
+  // Remove directory traversal and absolute paths
+  let sanitized = fileName.replace(/(\.\.[/\\])+|[/\\:;<>?"'|*]/g, '');
+  sanitized = sanitized.replace(/\s+/g, '_'); // Replace whitespace with underscores
+  sanitized = sanitized.replace(/^\.+/, ''); // Remove leading dots
+  // Limit to 100 chars and always .csv
+  sanitized = sanitized.substring(0, 100).replace(/\.csv$/i, '') + '.csv';
+  return sanitized;
+}
+
+class CsvExporter {
+  constructor(options = {}) {
+    this.outputDir = options.outputDir || path.resolve(__dirname, 'export');
+    this.i18n = options.i18n || ((str) => str);
+    this.logger =
+      options.logger ||
+      ((msg) => {
+        // fallback logger emits to console
+        if (typeof msg === 'string') {
+          console.log(msg);
+        } else {
+          console.log('[export.csv] Log:', msg);
+        }
+      });
+    this.delimiter = options.delimiter || ',';
+    if (!fs.existsSync(this.outputDir)) fs.mkdirSync(this.outputDir, { recursive: true });
+  }
+
+  /**
+   * Export data to CSV.
+   * @param {Object[]} data Array of objects to export
+   * @param {Array} [columns] Optional columns: Array of strings or {header, key}
+   * @param {Object} [exportOptions] exportOptions.fileName: override default
+   * @returns {string|null} Path to file or null on error
+   */
+  export(data, columns, exportOptions = {}) {
+    if (!Array.isArray(data) || data.length === 0) {
+      this.logger(`[export.csv] No data to export`);
+      return null;
+    }
+
+    // Determine fileName
+    let fileName = exportOptions.fileName || null;
+    if (fileName) {
+      fileName = sanitizeFileName(fileName);
+      if (!fileName) {
+        // fallback filename if after sanitization empty
+        fileName = `export_${Date.now()}.csv`;
+      }
+    } else if (this.fileName && typeof this.fileName === 'string') {
+      // for legacy compatibility if constructed with fileName option...
+      fileName = sanitizeFileName(this.fileName);
+      if (!fileName) fileName = `export_${Date.now()}.csv`;
+    } else {
+      fileName = `export_${Date.now()}.csv`;
+    }
+
+    const headers = columns
+      ? columns.map((col) => (typeof col === 'object' ? this.i18n(col.header || col.key) : this.i18n(col)))
+      : Object.keys(data[0]).map((k) => this.i18n(k));
+
+    const keys = columns
+      ? columns.map((col) => (typeof col === 'object' ? (col.key || col.header) : col))
+      : Object.keys(data[0]);
+
+    const records = data.map((row) => keys.map((key) => (row[key] !== undefined ? row[key] : '')));
+    const output = stringify([headers, ...records], { delimiter: this.delimiter });
+
+    const filePath = path.join(this.outputDir, fileName);
+    try {
+      fs.writeFileSync(filePath, output, 'utf8');
+      this.logger(`[export.csv] Data exported to ${filePath}`);
+      return filePath;
+    } catch (err) {
+      this.logger(`[export.csv] Export failed: ${err.message}`);
+      return null;
+    }
+  }
+}
+
+module.exports = CsvExporter;
